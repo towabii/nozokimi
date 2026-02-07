@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Digital Clock</title>
+    <!-- MediaPipe ライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        /* 起動用オーバーレイ（ここを追加：確実に権限を取るため） */
+        #start-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000;
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+        }
+        #start-btn {
+            padding: 20px 40px;
+            font-size: 24px;
+            background: #222;
+            color: #fff;
+            border: 2px solid #555;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        /* 時計（偽装用） */
+        #clock-container {
+            text-align: center;
+            z-index: 10;
+            pointer-events: none;
+        }
+        #time {
+            font-size: 15vw;
+            font-weight: bold;
+            color: #dcdcdc;
+            text-shadow: 0 0 10px #ffffff;
+        }
+        #date {
+            font-size: 5vw;
+            color: #888;
+        }
+
+        /* 動作ログ */
+        #system-log {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 5px;
+            font-size: 10px;
+            color: lime;
+            background: rgba(0,0,0,0.5);
+            z-index: 50;
+            pointer-events: none;
+            white-space: pre-wrap;
+        }
+
+        /* コントロールメニュー */
+        #controls {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            padding: 20px 0 40px 0;
+            background: rgba(20, 20, 20, 0.95);
+            border-top: 1px solid #444;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            align-items: center;
+            z-index: 1000;
+            transform: translateY(110%);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+        #controls.visible {
+            transform: translateY(0);
+        }
+
+        /* メニュー呼び出しトリガー */
+        #menu-trigger {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 80px;
+            z-index: 900;
+            background: transparent;
+        }
+
+        button {
+            padding: 12px 24px;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 80%;
+            max-width: 300px;
+            touch-action: manipulation;
+        }
+        button:active { background: #555; }
+        
+        .manual-active {
+            background-color: #d32f2f !important;
+            border-color: #f44336 !important;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+            100% { transform: scale(1); }
+        }
+
+        /* 状態インジケータ */
+        #status-indicator {
+            position: fixed;
+            top: 15px;
+            right: 15px;
+            width: 15px;
+            height: 15px;
+            border-radius: 50%;
+            background: #333;
+            border: 2px solid #fff;
+            z-index: 100;
+            transition: background 0.3s;
+        }
+
+        /* 裏で動く映像要素 */
+        #video-container {
+            position: fixed;
+            top: 50px;
+            right: 10px;
+            width: 120px;
+            height: 160px;
+            background: #000;
+            border: 2px solid #0f0;
+            z-index: 9999;
+            display: none;
+            pointer-events: none;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        /* 録画リスト画面 */
+        #recordings-list {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #111;
+            display: none;
+            overflow-y: auto;
+            z-index: 2000;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .video-item {
+            background: #222;
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #444;
+        }
+        .video-item video {
+            width: 100%;
+            background: black;
+        }
+        .close-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            font-size: 30px;
+            width: 40px;
+            height: 40px;
+            line-height: 40px;
+            text-align: center;
+            background: #333;
+            border-radius: 50%;
+            cursor: pointer;
+            z-index: 2100;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 起動ボタン（追加部分：ここを押して権限を取る） -->
+    <div id="start-overlay">
+        <button id="start-btn" onclick="startSystem()">TAP TO START</button>
+        <div style="margin-top:20px; color:#aaa; font-size:12px;">※カメラの許可が必要です</div>
+    </div>
+
+    <!-- ログ表示エリア -->
+    <div id="system-log">Wait for start...</div>
+
+    <!-- 偽装画面：時計 -->
+    <div id="clock-container">
+        <div id="date">--/--</div>
+        <div id="time">--:--</div>
+    </div>
+
+    <!-- 状態インジケータ -->
+    <div id="status-indicator"></div>
+
+    <!-- メニュー呼び出しトリガー -->
+    <div id="menu-trigger"></div>
+
+    <!-- コントロールメニュー -->
+    <div id="controls">
+        <div style="color:#aaa; font-size:12px;">▼ メニュー ▼</div>
+        <button id="btn-manual" onclick="toggleManualRecording()">手動録画開始</button>
+        <button onclick="showGallery()">録画一覧を見る</button>
+        <button onclick="toggleDebug()">デバッグ映像切替</button>
+        <button onclick="hideMenu()" style="background:#555; font-size:12px;">閉じる</button>
+    </div>
+
+    <!-- デバッグ用映像コンテナ -->
+    <div id="video-container">
+        <video id="input_video" playsinline muted autoplay></video>
+    </div>
+
+    <!-- 録画一覧オーバーレイ -->
+    <div id="recordings-list">
+        <div class="close-btn" onclick="hideGallery()">×</div>
+        <h3 style="margin-top:0; color:#fff;">録画データ</h3>
+        <div id="gallery-content"></div>
+    </div>
+
+    <script>
+        // --- 設定 ---
+        const FACE_CHECK_INTERVAL = 300;
+        const RECORD_STOP_DELAY = 4000;
+
+        // --- UI要素 ---
+        const logEl = document.getElementById('system-log');
+        const statusDot = document.getElementById('status-indicator');
+        const videoElement = document.getElementById('input_video');
+        const controlsDiv = document.getElementById('controls');
+        const galleryContent = document.getElementById('gallery-content');
+        const manualBtn = document.getElementById('btn-manual');
+        const startOverlay = document.getElementById('start-overlay');
+
+        // --- 変数 ---
+        let faceMesh;
+        let camera;
+        let lastCheckTime = 0;
+        let isRecording = false;
+        let isManualRecording = false;
+        let mediaRecorder;
+        let recordedChunks = [];
+        let stopTimeout = null;
+
+        function log(msg) {
+            console.log(msg);
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            logEl.innerText = `[${time}] ${msg}`;
+        }
+
+        // --- 時計機能 ---
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('time').innerText = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+            document.getElementById('date').innerText = now.toLocaleDateString([], {month:'2-digit', day:'2-digit', weekday:'short'});
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // --- 起動処理（修正部分：ボタンクリックで発火） ---
+        async function startSystem() {
+            startOverlay.style.display = 'none'; // ボタンを消す
+            log("システム起動中...");
+            await initCamera(); // カメラ起動へ
+        }
+
+        // --- メニュー表示制御 ---
+        document.getElementById('menu-trigger').addEventListener('click', () => controlsDiv.classList.add('visible'));
+        
+        let lastTap = 0;
+        document.addEventListener('touchend', (e) => {
+            const currentTime = new Date().getTime();
+            if (currentTime - lastTap < 400) controlsDiv.classList.add('visible');
+            lastTap = currentTime;
+        });
+        document.addEventListener('dblclick', () => controlsDiv.classList.add('visible'));
+
+        function hideMenu() {
+            controlsDiv.classList.remove('visible');
+        }
+
+        // --- カメラ初期化 ---
+        async function initCamera() {
+            log("カメラ初期化中...");
+            statusDot.style.background = "orange";
+
+            try {
+                // カメラストリーム取得
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: 640, height: 480 },
+                    audio: false
+                });
+                videoElement.srcObject = stream;
+                
+                // 明示的にplayを呼ぶ（念のため）
+                videoElement.play();
+
+                // FaceMeshロード
+                log("AIモデル読み込み中...");
+                faceMesh = new FaceMesh({locateFile: (file) => {
+                    return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+                }});
+                faceMesh.setOptions({
+                    maxNumFaces: 2,
+                    refineLandmarks: false,
+                    minDetectionConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+                faceMesh.onResults(onResults);
+
+                // Camera Utils起動
+                camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        await faceMesh.send({image: videoElement});
+                    },
+                    width: 640,
+                    height: 480
+                });
+                await camera.start();
+
+                log("監視開始: 時計モード");
+                statusDot.style.background = "#0f0"; // 緑＝正常
+
+            } catch (err) {
+                log("エラー: " + err.message);
+                statusDot.style.background = "red";
+                alert("カメラ起動に失敗しました。\n・HTTPS接続ですか？\n・ブラウザ設定でカメラを許可してください。");
+                // 失敗したらボタン再表示
+                startOverlay.style.display = 'flex';
+            }
+        }
+
+        // --- 顔検知ロジック ---
+        function onResults(results) {
+            if (Date.now() - lastCheckTime < FACE_CHECK_INTERVAL) return;
+            lastCheckTime = Date.now();
+
+            let isLooking = false;
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                for (const landmarks of results.multiFaceLandmarks) {
+                    if (checkFaceLooking(landmarks)) {
+                        isLooking = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!isManualRecording) {
+                if (isLooking) {
+                    if (!isRecording) {
+                        log("検知: 録画開始");
+                        startRecording();
+                    }
+                    if (stopTimeout) {
+                        clearTimeout(stopTimeout);
+                        stopTimeout = null;
+                    }
+                } else {
+                    if (isRecording && !stopTimeout) {
+                        stopTimeout = setTimeout(() => {
+                            log("自動停止");
+                            stopRecording();
+                        }, RECORD_STOP_DELAY);
+                    }
+                }
+            }
+        }
+
+        function checkFaceLooking(landmarks) {
+            const nose = landmarks[1];
+            const leftEar = landmarks[234];
+            const rightEar = landmarks[454];
+
+            const distLeft = Math.abs(nose.x - leftEar.x);
+            const distRight = Math.abs(nose.x - rightEar.x);
+            
+            const ratio = distLeft / (distRight + 0.001);
+            return (ratio > 0.5 && ratio < 2.0);
+        }
+
+        // --- 録画機能 ---
+        function startRecording() {
+            if (isRecording) return;
+            
+            try {
+                const stream = videoElement.srcObject;
+                if (!stream) {
+                    log("エラー: ストリームなし");
+                    return;
+                }
+
+                recordedChunks = [];
+                
+                try {
+                    mediaRecorder = new MediaRecorder(stream);
+                } catch (e1) {
+                    try {
+                        mediaRecorder = new MediaRecorder(stream, {mimeType: 'video/mp4'});
+                    } catch (e2) {
+                         mediaRecorder = new MediaRecorder(stream, {mimeType: 'video/webm'});
+                    }
+                }
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data && event.data.size > 0) {
+                        recordedChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = saveVideo;
+                mediaRecorder.start();
+                
+                isRecording = true;
+                statusDot.style.background = "red";
+
+            } catch (e) {
+                log("録画エラー: " + e.message);
+            }
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            stopTimeout = null;
+            
+            if (!isManualRecording) {
+                statusDot.style.background = "#0f0";
+            }
+        }
+
+        function saveVideo() {
+            log("動画保存中...");
+            if (recordedChunks.length === 0) return;
+
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            const timeStr = new Date().toLocaleTimeString();
+            
+            const div = document.createElement('div');
+            div.className = 'video-item';
+            div.innerHTML = `
+                <div style="color:#ddd; margin-bottom:5px;">時刻: ${timeStr}</div>
+                <video src="${url}" controls playsinline></video>
+                <a href="${url}" download="evidence_${Date.now()}.webm" 
+                   style="display:block; margin-top:10px; background:#444; color:#fff; text-align:center; padding:10px; text-decoration:none;">
+                   保存する
+                </a>
+            `;
+            galleryContent.prepend(div);
+            log("保存完了");
+        }
+
+        // --- 手動録画 ---
+        function toggleManualRecording() {
+            if (!isManualRecording) {
+                isManualRecording = true;
+                manualBtn.innerText = "手動録画停止 (REC)";
+                manualBtn.classList.add("manual-active");
+                if (!isRecording) startRecording();
+                if (stopTimeout) { clearTimeout(stopTimeout); stopTimeout = null; }
+            } else {
+                isManualRecording = false;
+                manualBtn.innerText = "手動録画開始";
+                manualBtn.classList.remove("manual-active");
+                stopRecording();
+            }
+        }
+
+        // --- UI操作 ---
+        function toggleDebug() {
+            const el = document.getElementById('video-container');
+            if (el.style.display === 'block') {
+                el.style.display = 'none';
+                log("デバッグ映像: OFF");
+            } else {
+                el.style.display = 'block';
+                log("デバッグ映像: ON");
+            }
+        }
+
+        function showGallery() { document.getElementById('recordings-list').style.display = 'block'; }
+        function hideGallery() { document.getElementById('recordings-list').style.display = 'none'; }
+    </script>
+</body>
+</html>
